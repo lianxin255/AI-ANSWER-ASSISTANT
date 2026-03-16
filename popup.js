@@ -120,6 +120,71 @@ openTemplatesBtn.addEventListener("click", () => {
   window.location.href = "template-manager.html";
 });
 
+// --- Question Bank Management ---
+const openBankBtn = document.getElementById("openBankBtn");
+openBankBtn.addEventListener("click", () => {
+  window.location.href = "question-bank.html";
+});
+
+// 检查当前站点是否有关联题库
+async function checkSiteBinding() {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tabs[0] || !tabs[0].url) return;
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: 'getBindingForUrl',
+      url: tabs[0].url
+    });
+
+    if (response && response.success && response.binding) {
+      renderBankSelector(response.binding);
+    }
+  } catch (e) {
+    console.log('[popup] 题库关联检查失败:', e);
+  }
+}
+
+function renderBankSelector(binding) {
+  const selector = document.getElementById("bankSelector");
+  const list = document.getElementById("bankCheckboxList");
+  const status = document.getElementById("bankStatus");
+
+  if (!binding || !binding.banks || binding.banks.length === 0) {
+    selector.style.display = "none";
+    return;
+  }
+
+  selector.style.display = "";
+  const activeIds = binding.activeBankIds || [];
+  status.textContent = `${activeIds.length}/${binding.banks.length} 激活`;
+
+  list.innerHTML = binding.banks.map(bank => `
+    <label class="bank-check-item">
+      <input type="checkbox" value="${bank.id}" ${activeIds.includes(bank.id) ? 'checked' : ''} data-pattern="${binding.pattern}">
+      <span>${bank.name} (${bank.questionCount}题)</span>
+    </label>
+  `).join('');
+
+  // 绑定 checkbox 事件
+  list.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+    cb.addEventListener('change', async () => {
+      const pattern = cb.dataset.pattern;
+      const checkedIds = Array.from(list.querySelectorAll('input:checked')).map(c => c.value);
+      status.textContent = `${checkedIds.length}/${binding.banks.length} 激活`;
+
+      await chrome.runtime.sendMessage({
+        action: 'setActiveBanks',
+        sitePattern: pattern,
+        activeBankIds: checkedIds
+      });
+    });
+  });
+}
+
+// 初始化时检查题库
+checkSiteBinding();
+
 // --- Model Management Logic ---
 toggleEditApiKeyBtn.addEventListener("click", () => {
   const type = editApiKeyInput.type === "password" ? "text" : "password";
@@ -390,9 +455,13 @@ async function injectContentScript(tabId) {
     await chrome.scripting.executeScript({
       target: { tabId },
       files: [
+        "lib/xlsx.mini.js",
         "modules/site-matcher.js",
         "modules/template-manager.js",
         "modules/scanner-enhanced.js",
+        "modules/xlsx-parser.js",
+        "modules/question-bank-manager.js",
+        "modules/question-bank-matcher.js",
         "content.js",
       ],
     });

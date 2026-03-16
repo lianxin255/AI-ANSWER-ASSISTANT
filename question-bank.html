@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>题库管理</title>
+  <link rel="stylesheet" href="popup.css">
+  <link rel="stylesheet" href="question-bank.css">
+</head>
+<body>
+  <div class="app">
+    <!-- 顶部标题栏 -->
+    <header class="app-header">
+      <div class="brand">
+        <button class="icon-btn" id="backBtn" title="返回">
+          <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+          </svg>
+        </button>
+        <span class="title">题库管理</span>
+      </div>
+      <div class="header-actions">
+        <button class="btn btn-primary btn-sm" id="importBtn">
+          <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+          </svg>
+          导入题库
+        </button>
+      </div>
+    </header>
+
+    <!-- 主内容区域 -->
+    <main class="app-content">
+
+      <!-- Tab 切换 -->
+      <div class="tab-bar">
+        <button class="tab-item active" data-tab="banks">题库列表</button>
+        <button class="tab-item" data-tab="bindings">站点关联</button>
+      </div>
+
+      <!-- 题库列表 Tab -->
+      <div class="tab-panel active" id="panelBanks">
+        <div class="bank-list" id="bankList">
+          <!-- 动态渲染 -->
+        </div>
+        <div class="empty-state" id="emptyBanks">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
+          </svg>
+          <p>暂无题库</p>
+          <p class="hint">点击上方「导入题库」按钮添加 XLS/XLSX 文件</p>
+        </div>
+      </div>
+
+      <!-- 站点关联 Tab -->
+      <div class="tab-panel" id="panelBindings">
+        <div class="binding-form" id="bindingForm">
+          <div class="form-row">
+            <input type="text" id="sitePattern" placeholder="站点域名（如 www.wenjuan.group）" class="input">
+            <input type="text" id="siteName" placeholder="站点名称（可选）" class="input input-short">
+          </div>
+          <div class="bank-select-list" id="bindBankSelect">
+            <!-- 动态渲染题库复选框 -->
+          </div>
+          <button class="btn btn-primary btn-sm" id="saveBindingBtn">保存关联</button>
+        </div>
+
+        <div class="binding-list" id="bindingList">
+          <!-- 动态渲染 -->
+        </div>
+        <div class="empty-state" id="emptyBindings" style="display:none">
+          <p>暂无站点关联</p>
+          <p class="hint">在上方表单中设置站点与题库的关联关系</p>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- 导入进度弹窗 -->
+  <div class="modal-overlay" id="importModal" style="display:none">
+    <div class="modal-content">
+      <h3 class="modal-title">导入题库</h3>
+      <div id="importStatus" class="import-status">
+        <p id="importMessage">准备导入...</p>
+        <div class="progress-bar">
+          <div class="progress-fill" id="importProgress"></div>
+        </div>
+      </div>
+      <div id="importResult" class="import-result" style="display:none">
+        <p id="resultMessage"></p>
+        <button class="btn btn-primary" id="importDoneBtn">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 题库预览弹窗 -->
+  <div class="modal-overlay" id="previewModal" style="display:none">
+    <div class="modal-content modal-large">
+      <div class="modal-header-row">
+        <h3 class="modal-title" id="previewTitle">题库预览</h3>
+        <button class="icon-btn" id="closePreviewBtn" title="关闭">
+          <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+      <div class="preview-toolbar">
+        <input type="text" id="previewSearch" placeholder="搜索题目..." class="input">
+        <span class="preview-count" id="previewCount"></span>
+      </div>
+      <div class="preview-list" id="previewList">
+        <!-- 动态渲染 -->
+      </div>
+    </div>
+  </div>
+
+  <!-- 隐藏文件选择器 -->
+  <input type="file" id="fileInput" accept=".xls,.xlsx" style="display:none">
+
+  <script src="lib/xlsx.mini.js"></script>
+  <script src="modules/xlsx-parser.js"></script>
+  <script src="modules/question-bank-manager.js"></script>
+  <script src="question-bank-ui.js"></script>
+</body>
+</html>
