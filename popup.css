@@ -163,6 +163,48 @@ body {
   gap: 16px;
 }
 
+/* Bank Selector */
+.bank-selector {
+  background: var(--secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 12px 16px;
+}
+
+.bank-selector .section-header {
+  margin-bottom: 8px;
+}
+
+.bank-status {
+  font-size: 11px;
+  color: var(--text-light);
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.bank-checkbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bank-check-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-main);
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.bank-check-item input[type="checkbox"] {
+  accent-color: var(--primary);
+  width: 14px;
+  height: 14px;
+}
+
 .stat-card {
   padding: 16px;
   border-radius: var(--radius-lg);

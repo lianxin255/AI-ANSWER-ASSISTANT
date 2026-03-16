@@ -49,8 +49,15 @@
           console.log("[TemplateManager] 内置模板加载成功: 腾讯问卷");
         }
 
-        // TODO: 加载更多内置模板
-        // const examTemplate = await this._fetchTemplate('/templates/exam.json');
+        // 加载问卷网模板
+        const wenjuanTemplate = await this._fetchTemplate(
+          "/templates/wenjuan.json"
+        );
+        if (wenjuanTemplate) {
+          this.builtInTemplates.push(wenjuanTemplate);
+          window.siteMatcher.registerTemplate(wenjuanTemplate);
+          console.log("[TemplateManager] 内置模板加载成功: 问卷网");
+        }
       } catch (error) {
         console.error("[TemplateManager] 加载内置模板失败:", error);
       }

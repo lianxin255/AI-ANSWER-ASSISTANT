@@ -1,0 +1,58 @@
+{
+  "siteId": "wenjuan_group",
+  "siteName": "问卷网",
+  "urlPatterns": [
+    "https://www.wenjuan.group/s/*",
+    "https://www.wenjuan.com/s/*",
+    "https://wenjuan.group/s/*",
+    "https://wenjuan.com/s/*"
+  ],
+  "urlRegex": "^https?://(?:www\\.)?wenjuan\\.(?:group|com)/s/",
+  "version": "1.0.0",
+  "createdAt": "2026-03-16",
+  "lastUpdated": "2026-03-16",
+  "description": "问卷网在线考试/问卷调查系统",
+  "selectors": {
+    "questionContainer": ".question-box",
+    "questionTypes": {
+      "detectByClass": true,
+      "single": {
+        "container": ".question-box:has(.q-single)",
+        "title": ".question-title",
+        "optionsContainer": ".q-single",
+        "optionItem": ".ws-radio",
+        "optionInput": "input.ws-radio__original",
+        "optionLabel": ".ws-radio__label",
+        "optionLabelPattern": "^([A-Z])[\\.．、\\s]",
+        "clickTarget": ".ws-radio"
+      },
+      "multiple": {
+        "container": ".question-box:has(.q-multiple)",
+        "title": ".question-title",
+        "optionsContainer": ".q-multiple",
+        "optionItem": ".ws-checkbox",
+        "optionInput": "input.ws-checkbox__original",
+        "optionLabel": ".ws-checkbox__label",
+        "optionLabelPattern": "^([A-Z])[\\.．、\\s]",
+        "clickTarget": ".ws-checkbox"
+      },
+      "fill": {
+        "container": ".question-box:has(.input-entry:not(.input-number))",
+        "title": ".question-title",
+        "inputsContainer": ".question-content",
+        "inputs": "textarea, input.input-body"
+      }
+    },
+    "questionIndex": "id",
+    "questionSeq": ".question-seq"
+  },
+  "features": {
+    "hasQuestionIndex": true,
+    "hasDataAttribute": false,
+    "inputsHidden": true,
+    "needClickWrapper": true,
+    "autoScrollSupport": true,
+    "hasQuestionSeq": true
+  },
+  "notes": "问卷网使用Vue组件系统(ws-radio/ws-checkbox)构建题目。单选题使用.q-single类，多选题使用.q-multiple类，判断题同时具有.judge和.q-single类（作为单选处理，选项为'对/错'）。原生input隐藏(ws-radio__original/ws-checkbox__original)，需点击外层.ws-radio/.ws-checkbox包装器。每个题目容器通过id属性(格式:question-{hash})唯一标识。"
+}

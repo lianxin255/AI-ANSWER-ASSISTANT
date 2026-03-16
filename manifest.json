@@ -6,6 +6,7 @@
   "permissions": [
     "activeTab",
     "storage",
+    "unlimitedStorage",
     "scripting",
     "declarativeNetRequest",
     "sidePanel"
@@ -29,9 +30,13 @@
     {
       "matches": ["<all_urls>"],
       "js": [
+        "lib/xlsx.mini.js",
         "modules/site-matcher.js",
         "modules/template-manager.js",
         "modules/scanner-enhanced.js",
+        "modules/xlsx-parser.js",
+        "modules/question-bank-manager.js",
+        "modules/question-bank-matcher.js",
         "content.js"
       ],
       "css": ["content.css"]
@@ -39,7 +44,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["templates/*.json"],
+      "resources": ["templates/*.json", "lib/*.js"],
       "matches": ["<all_urls>"]
     }
   ]

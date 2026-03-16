@@ -86,7 +86,7 @@
 
         // 查找匹配的类型
         for (const [type, config] of Object.entries(questionTypes)) {
-          if (type === "detectByAttribute") continue;
+          if (type.startsWith("detect")) continue;
           if (config.typeValue === typeValue) {
             questionType = type;
             typeSelectors = config;
@@ -96,7 +96,7 @@
       } else {
         // 通过选择器判断类型
         for (const [type, config] of Object.entries(questionTypes)) {
-          if (type === "detectByAttribute") continue;
+          if (type.startsWith("detect")) continue;
           if (element.matches(config.container)) {
             questionType = type;
             typeSelectors = config;

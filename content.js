@@ -715,6 +715,18 @@ ${payload}`;
 
     sendLog("info", `开始答题，共 ${questions.length} 道题目`);
 
+    // 加载关联题库
+    try {
+      const url = window.location.href;
+      const binding = await QuestionBankManager.findBindingByUrl(url);
+      if (binding && binding.activeBankIds && binding.activeBankIds.length > 0) {
+        await window.questionBankMatcher.loadBanks(binding.activeBankIds);
+        sendLog("info", `已加载本地题库（${window.questionBankMatcher.questionCount} 题），优先本地匹配`);
+      }
+    } catch (e) {
+      console.warn("[AI答题助手] 题库加载失败，将全部使用 AI:", e);
+    }
+
     for (let i = 0; i < questions.length; i++) {
       if (!isRunning) {
         sendLog("warning", "答题已停止");
@@ -751,9 +763,24 @@ ${payload}`;
       );
 
       try {
-        // 逐题调用AI获取答案
-        sendLog("info", `正在获取第 ${i + 1} 题的答案...`);
-        const answer = await getAIAnswerForQuestion(question);
+        // 先尝试本地题库匹配
+        let answer = null;
+        let isLocalMatch = false;
+        if (window.questionBankMatcher && window.questionBankMatcher.isLoaded()) {
+          const match = window.questionBankMatcher.match(question);
+          if (match) {
+            // 转换题库答案为可应用的格式
+            answer = convertBankAnswer(match.question, question);
+            isLocalMatch = true;
+            sendLog("success", `第 ${i + 1} 题本地匹配成功（级别${match.level}，相似度${(match.score * 100).toFixed(0)}%）`);
+          }
+        }
+
+        // 本地未匹配，调用 AI
+        if (!answer) {
+          sendLog("info", `正在获取第 ${i + 1} 题的答案...`);
+          answer = await getAIAnswerForQuestion(question);
+        }
 
         if (answer && answer.answer) {
           question.answer = answer.answer;
@@ -761,7 +788,9 @@ ${payload}`;
           await applyAnswerDirectly(question);
           question.answered = true;
           answeredCount++;
+          // 更新统计
           updateStats();
+
           // 发送统计
           chrome.runtime.sendMessage({
             action: "trackStats",
@@ -769,7 +798,7 @@ ${payload}`;
           });
           sendLog(
             "success",
-            `第 ${i + 1} 题已完成，答案: ${JSON.stringify(question.answer)}`
+            `第 ${i + 1} 题已完成${isLocalMatch ? '(本地)' : '(AI)'}，答案: ${JSON.stringify(question.answer)}`
           );
         } else {
           sendLog("warning", `第 ${i + 1} 题未能获取答案`);
@@ -791,6 +820,18 @@ ${payload}`;
 
       // Wait before next question
       await sleep(500);
+    }
+
+    // 批量更新题库匹配统计
+    if (window.questionBankMatcher && window.questionBankMatcher.isLoaded()) {
+      try {
+        const stats = window.questionBankMatcher.getMatchStats();
+        for (const [bankId, count] of Object.entries(stats)) {
+          if (count > 0) {
+            await QuestionBankManager.updateBankStats(bankId, count);
+          }
+        }
+      } catch (_e) { /* 统计更新失败不影响主流程 */ }
     }
 
     isRunning = false;
@@ -905,6 +946,7 @@ ${payload}`;
   async function applyAnswerDirectly(question) {
     switch (question.type) {
       case "single":
+      case "judge":
         await applySingleAnswerDirectly(question);
         break;
       case "multiple":
@@ -957,7 +999,8 @@ ${payload}`;
       answers = answers.map((a) => String(a).toUpperCase());
     }
 
-    console.log(`[AI答题助手] 多选答案:`, answers);
+    console.log(`[AI答题助手] 多选答案:`, answers, `| 题目: ${question.text.substring(0, 30)}`);
+    console.log(`[AI答题助手] 可用选项:`, question.options.map(o => `${o.label}=${o.text}`));
 
     for (const option of question.options) {
       if (answers.includes(option.label.toUpperCase())) {
@@ -1141,6 +1184,84 @@ ${payload}`;
   }
 
   // Get type label
+  /**
+   * 将题库匹配结果转换为可应用的答案格式
+   * 处理: 判断题→单选转换、选项文本回退匹配、填空题直接传递
+   */
+  function convertBankAnswer(bankQuestion, scannedQuestion) {
+    const bankType = bankQuestion.type;
+    const scanType = scannedQuestion.type;
+    const bankAnswerArray = bankQuestion.answerArray || [];
+    const rawAnswer = bankQuestion.answer || '';
+
+    // 1. 填空题：直接使用答案文本
+    if (scanType === 'fill') {
+      return {
+        success: true,
+        type: 'fill',
+        answer: bankAnswerArray.length > 0 ? bankAnswerArray : [rawAnswer],
+        explanation: '[本地题库]'
+      };
+    }
+
+    // 2. 判断题→单选转换：题库答案是"对/错"，需要匹配页面选项
+    if (bankType === 'judge' && scanType === 'single') {
+      const isCorrect = /^[对是√正确true✓]+$/i.test(rawAnswer.replace(/[,;、，；\s]/g, ''));
+      const isWrong = /^[错否×不正确false✗]+$/i.test(rawAnswer.replace(/[,;、，；\s]/g, ''));
+
+      if (isCorrect || isWrong) {
+        // 尝试通过选项文本匹配
+        for (const opt of (scannedQuestion.options || [])) {
+          const optText = (opt.text || '').trim();
+          if (isCorrect && /^[对是正确√✓]/.test(optText)) {
+            return { success: true, type: 'single', answer: opt.label, explanation: '[本地题库-判断]' };
+          }
+          if (isWrong && /^[错否不正确×✗]/.test(optText)) {
+            return { success: true, type: 'single', answer: opt.label, explanation: '[本地题库-判断]' };
+          }
+        }
+        // 常见约定：A=对/正确, B=错/不正确
+        return { success: true, type: 'single', answer: isCorrect ? 'A' : 'B', explanation: '[本地题库-判断]' };
+      }
+    }
+
+    // 3. 选择题：答案已经是字母格式
+    if (bankAnswerArray.length > 0 && bankAnswerArray.every(a => /^[A-Z]$/i.test(a))) {
+      const answer = scanType === 'single'
+        ? bankAnswerArray[0].toUpperCase()
+        : bankAnswerArray.map(a => a.toUpperCase());
+      return { success: true, type: scanType, answer, explanation: '[本地题库]' };
+    }
+
+    // 4. 答案是文本而非字母 - 通过选项文本匹配找到对应字母
+    if (bankAnswerArray.length > 0 && scannedQuestion.options && scannedQuestion.options.length > 0) {
+      const matchedLabels = [];
+      for (const bankAns of bankAnswerArray) {
+        const norm = (bankAns || '').replace(/[^a-z0-9\u4e00-\u9fff]/gi, '').toLowerCase();
+        for (const opt of scannedQuestion.options) {
+          const optNorm = (opt.text || '').replace(/[^a-z0-9\u4e00-\u9fff]/gi, '').toLowerCase();
+          if (optNorm === norm || optNorm.includes(norm) || norm.includes(optNorm)) {
+            matchedLabels.push(opt.label.toUpperCase());
+            break;
+          }
+        }
+      }
+      if (matchedLabels.length > 0) {
+        const answer = scanType === 'single' ? matchedLabels[0] : matchedLabels;
+        return { success: true, type: scanType, answer, explanation: '[本地题库-文本匹配]' };
+      }
+    }
+
+    // 5. 兜底：直接使用原始答案
+    const finalAnswer = bankAnswerArray.length === 1 ? bankAnswerArray[0] : bankAnswerArray;
+    return {
+      success: true,
+      type: scanType,
+      answer: finalAnswer,
+      explanation: '[本地题库]'
+    };
+  }
+
   function getTypeLabel(type) {
     const labels = {
       single: "单选题",
@@ -1167,8 +1288,56 @@ ${payload}`;
       jsonStr = objMatch[0];
     }
 
-    const parsed = JSON.parse(jsonStr);
-    return parsed;
+    jsonStr = jsonStr.trim();
+
+    // 1. 直接解析
+    try {
+      return JSON.parse(jsonStr);
+    } catch (e) {
+      // continue to fallback
+    }
+
+    // 2. 修复常见 JSON 问题后重试
+    try {
+      let fixed = jsonStr
+        .replace(/,\s*([}\]])/g, "$1")           // 移除尾逗号
+        .replace(/'/g, '"')                       // 单引号→双引号
+        .replace(/[\r\n]+/g, " ")                 // 换行→空格
+        .replace(/\t/g, " ");                     // Tab→空格
+      return JSON.parse(fixed);
+    } catch (e) {
+      // continue to fallback
+    }
+
+    // 3. 只提取 answer 字段（核心数据），跳过容易出错的 explanation
+    try {
+      // 匹配 "answer": "X" 或 "answer": ["A","B"]
+      const answerMatch = jsonStr.match(/"answer"\s*:\s*("(?:[^"\\]|\\.)*"|\[[\s\S]*?\])/);
+      const typeMatch = jsonStr.match(/"type"\s*:\s*"(single|multiple|fill)"/);
+      if (answerMatch) {
+        const answerValue = JSON.parse(answerMatch[1]);
+        return {
+          type: typeMatch ? typeMatch[1] : "single",
+          answer: answerValue,
+          explanation: ""
+        };
+      }
+    } catch (e) {
+      // continue to fallback
+    }
+
+    // 4. 最后兜底：直接从文本提取答案字母
+    const letterMatch = jsonStr.match(/"answer"\s*:\s*"([A-Z])"/);
+    if (letterMatch) {
+      return { type: "single", answer: letterMatch[1], explanation: "" };
+    }
+    const arrayMatch = jsonStr.match(/"answer"\s*:\s*\[\s*"([A-Z])"(?:\s*,\s*"([A-Z])")*\s*\]/);
+    if (arrayMatch) {
+      const letters = arrayMatch[0].match(/"([A-Z])"/g).map(s => s.replace(/"/g, ""));
+      return { type: "multiple", answer: letters, explanation: "" };
+    }
+
+    throw new Error("无法从AI响应中提取答案: " + jsonStr.substring(0, 100));
   }
 
   // Apply answer to question
@@ -1263,7 +1432,6 @@ ${payload}`;
             console.log("[AI答题助手] 找到关联label，点击label");
             label.click();
             await sleep(50);
-            // 验证是否成功
             if (element.checked) {
               console.log("[AI答题助手] 通过label点击成功");
               return;
@@ -1271,7 +1439,18 @@ ${payload}`;
           }
         }
 
-        // 如果没有label或label点击无效，直接设置checked
+        // 尝试点击 Vue/React 组件包装器（如 .ws-checkbox, .ws-radio 等）
+        const wrapper = element.closest(
+          '.ws-checkbox, .ws-radio, [role="checkbox"], [role="radio"]'
+        );
+        if (wrapper) {
+          console.log("[AI答题助手] 找到组件包装器，点击wrapper:", wrapper.className);
+          wrapper.click();
+          await sleep(50);
+          return;
+        }
+
+        // 无包装器时，直接操作原生 input
         element.checked = true;
       }
       element.dispatchEvent(

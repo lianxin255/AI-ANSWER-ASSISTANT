@@ -12,21 +12,92 @@ chrome.action.onClicked.addListener((tab) => {
   chrome.sidePanel.open({ tabId: tab.id });
 });
 
+// 统一消息监听器
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'callAI') {
-    callAI(request.config, request.prompt, 'answer')
-      .then(response => sendResponse({ success: true, data: response }))
-      .catch(error => sendResponse({ success: false, error: error.message }));
-    return true; // Keep the message channel open for async response
-  }
-  
-  if (request.action === 'analyzeHTML') {
-    callAI(request.config, request.prompt, 'analyze')
-      .then(response => sendResponse({ success: true, data: response }))
-      .catch(error => sendResponse({ success: false, error: error.message }));
-    return true;
+  switch (request.action) {
+    case 'callAI':
+      callAI(request.config, request.prompt, 'answer')
+        .then(response => sendResponse({ success: true, data: response }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
+      return true;
+
+    case 'analyzeHTML':
+      callAI(request.config, request.prompt, 'analyze')
+        .then(response => sendResponse({ success: true, data: response }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
+      return true;
+
+    case 'getBindingForUrl':
+      handleGetBinding(request, sendResponse);
+      return true;
+
+    case 'setActiveBanks':
+      handleSetActiveBanks(request, sendResponse);
+      return true;
+
+    case 'trackStats':
+      sendStats(request.event).then(() => sendResponse({ success: true }));
+      return true;
   }
 });
+
+// ============ 题库管理消息处理 ============
+
+async function handleGetBinding(request, sendResponse) {
+  try {
+    const result = await chrome.storage.local.get('bankSiteBindings');
+    const bindings = result.bankSiteBindings || {};
+    const hostname = new URL(request.url).hostname;
+    let binding = null;
+
+    // 精确域名匹配
+    for (const [pattern, b] of Object.entries(bindings)) {
+      if (hostname === pattern || hostname.endsWith('.' + pattern)) {
+        binding = { pattern, ...b };
+        break;
+      }
+      // 通配符匹配
+      if (pattern.startsWith('*.')) {
+        const base = pattern.slice(2);
+        if (hostname === base || hostname.endsWith('.' + base)) {
+          binding = { pattern, ...b };
+          break;
+        }
+      }
+    }
+
+    // 附加题库名称信息
+    if (binding && binding.boundBankIds) {
+      const banksResult = await chrome.storage.local.get('questionBanks');
+      const banks = banksResult.questionBanks || {};
+      binding.banks = binding.boundBankIds.map(id => ({
+        id,
+        name: banks[id]?.name || id,
+        questionCount: banks[id]?.questionCount || 0
+      }));
+    }
+
+    sendResponse({ success: true, binding });
+  } catch (e) {
+    sendResponse({ success: false, error: e.message });
+  }
+}
+
+async function handleSetActiveBanks(request, sendResponse) {
+  try {
+    const result = await chrome.storage.local.get('bankSiteBindings');
+    const bindings = result.bankSiteBindings || {};
+    if (bindings[request.sitePattern]) {
+      bindings[request.sitePattern].activeBankIds = request.activeBankIds;
+      await chrome.storage.local.set({ bankSiteBindings: bindings });
+    }
+    sendResponse({ success: true });
+  } catch (e) {
+    sendResponse({ success: false, error: e.message });
+  }
+}
+
+// ============ AI API 调用 ============
 
 async function callAI(config, prompt, mode = 'answer') {
   const { baseUrl, apiKey, model } = config;
@@ -36,7 +107,7 @@ async function callAI(config, prompt, mode = 'answer') {
   if (!url.endsWith('/chat/completions')) {
     url += '/chat/completions';
   }
-  
+
   // 根据模式选择不同的系统提示
   const systemPrompts = {
     answer: `你是一个专业的答题助手。用户会给你题目，你需要分析题目并给出正确答案。
@@ -95,22 +166,18 @@ async function callAI(config, prompt, mode = 'answer') {
   if (!response.ok) {
     const errorText = await response.text();
     let errorMsg = `API请求失败 (${response.status})`;
-    
-    // 打印详细错误到控制台
+
     console.error('[AI答题助手] API请求失败:', {
       status: response.status,
       statusText: response.statusText,
       url: url,
       response: errorText
     });
-    
-    // 解析错误信息
+
     try {
       const errorJson = JSON.parse(errorText);
       const msg = errorJson.error?.message || errorJson.message || '';
-      
-      console.error('[AI答题助手] 解析后的错误:', errorJson);
-      
+
       if (response.status === 401) {
         errorMsg = 'API Key无效，请检查配置';
       } else if (response.status === 403) {
@@ -123,15 +190,14 @@ async function callAI(config, prompt, mode = 'answer') {
         errorMsg = `API错误: ${msg}`;
       }
     } catch (e) {
-      // 无法解析JSON，使用原始错误
       console.error('[AI答题助手] 无法解析错误响应:', errorText);
     }
-    
+
     throw new Error(errorMsg);
   }
 
   const data = await response.json();
-  
+
   if (!data.choices || !data.choices[0] || !data.choices[0].message) {
     throw new Error('API返回格式错误');
   }
@@ -139,7 +205,8 @@ async function callAI(config, prompt, mode = 'answer') {
   return data.choices[0].message.content;
 }
 
-// 发送统计事件
+// ============ 统计 ============
+
 async function sendStats(event) {
   try {
     await fetch('https://d.yikfun.de5.net/', {
@@ -151,11 +218,3 @@ async function sendStats(event) {
     // 静默失败，不影响主功能
   }
 }
-
-// 监听统计事件
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'trackStats') {
-    sendStats(request.event).then(() => sendResponse({ success: true }));
-    return true;
-  }
-});
