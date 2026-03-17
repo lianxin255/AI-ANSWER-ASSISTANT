@@ -243,7 +243,7 @@
       importProgress.style.width = '60%';
 
       const { questions, formatType } = await XlsxParser.parse(buffer, {
-        onAIFallback: async (headers, sampleRows) => {
+        onAIFallback: async ({ headers, sampleRows }) => {
           importMessage.textContent = '格式未知，正在请求 AI 解析...';
           return await requestAIMapping(headers, sampleRows);
         }
@@ -298,11 +298,14 @@
       const response = await chrome.runtime.sendMessage({
         action: 'callAI',
         config: await getActiveModelConfig(),
-        prompt
+        prompt,
+        mode: 'mapping'
       });
 
-      if (response && response.text) {
-        const jsonStr = response.text.replace(/```json?\s*|\s*```/g, '').trim();
+      if (response && response.success && response.data) {
+        const raw = response.data;
+        const text = typeof raw === 'string' ? raw : (raw.text || JSON.stringify(raw));
+        const jsonStr = text.replace(/```json?\s*|\s*```/g, '').trim();
         return JSON.parse(jsonStr);
       }
     } catch (err) {

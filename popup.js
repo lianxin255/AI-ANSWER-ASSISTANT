@@ -185,6 +185,24 @@ function renderBankSelector(binding) {
 // 初始化时检查题库
 checkSiteBinding();
 
+// --- Answer Strategy ---
+const answerStrategySelect = document.getElementById("answerStrategy");
+
+async function initAnswerStrategy() {
+  try {
+    const result = await chrome.storage.sync.get(["answerStrategy"]);
+    answerStrategySelect.value = result.answerStrategy || "local_first";
+  } catch (_e) {
+    answerStrategySelect.value = "local_first";
+  }
+}
+
+answerStrategySelect.addEventListener("change", async () => {
+  await chrome.storage.sync.set({ answerStrategy: answerStrategySelect.value });
+});
+
+initAnswerStrategy();
+
 // --- Model Management Logic ---
 toggleEditApiKeyBtn.addEventListener("click", () => {
   const type = editApiKeyInput.type === "password" ? "text" : "password";

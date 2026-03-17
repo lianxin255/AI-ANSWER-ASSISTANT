@@ -8,6 +8,13 @@
   let answeredCount = 0;
   let isRunning = false;
   let config = null;
+  let answerStrategy = "local_first";
+
+  const ANSWER_STRATEGY = {
+    LOCAL_FIRST: "local_first",
+    AI_ONLY: "ai_only",
+    LOCAL_ONLY: "local_only",
+  };
 
   // Question selectors for common exam platforms
   const QUESTION_SELECTORS = [
@@ -713,18 +720,24 @@ ${payload}`;
       return;
     }
 
+    answerStrategy = await loadAnswerStrategy();
     sendLog("info", `开始答题，共 ${questions.length} 道题目`);
+    sendLog("info", `答题策略：${getStrategyLabel(answerStrategy)}`);
 
-    // 加载关联题库
-    try {
-      const url = window.location.href;
-      const binding = await QuestionBankManager.findBindingByUrl(url);
-      if (binding && binding.activeBankIds && binding.activeBankIds.length > 0) {
-        await window.questionBankMatcher.loadBanks(binding.activeBankIds);
-        sendLog("info", `已加载本地题库（${window.questionBankMatcher.questionCount} 题），优先本地匹配`);
+    // 加载关联题库（策略允许时）
+    if (answerStrategy !== ANSWER_STRATEGY.AI_ONLY) {
+      try {
+        const url = window.location.href;
+        const binding = await QuestionBankManager.findBindingByUrl(url);
+        if (binding && binding.activeBankIds && binding.activeBankIds.length > 0) {
+          await window.questionBankMatcher.loadBanks(binding.activeBankIds);
+          sendLog("info", `已加载本地题库（${window.questionBankMatcher.questionCount} 题），优先本地匹配`);
+        }
+      } catch (e) {
+        console.warn("[AI答题助手] 题库加载失败，将全部使用 AI:", e);
       }
-    } catch (e) {
-      console.warn("[AI答题助手] 题库加载失败，将全部使用 AI:", e);
+    } else if (window.questionBankMatcher) {
+      window.questionBankMatcher.unload();
     }
 
     for (let i = 0; i < questions.length; i++) {
@@ -766,7 +779,7 @@ ${payload}`;
         // 先尝试本地题库匹配
         let answer = null;
         let isLocalMatch = false;
-        if (window.questionBankMatcher && window.questionBankMatcher.isLoaded()) {
+        if (answerStrategy !== ANSWER_STRATEGY.AI_ONLY && window.questionBankMatcher && window.questionBankMatcher.isLoaded()) {
           const match = window.questionBankMatcher.match(question);
           if (match) {
             // 转换题库答案为可应用的格式
@@ -778,6 +791,10 @@ ${payload}`;
 
         // 本地未匹配，调用 AI
         if (!answer) {
+          if (answerStrategy === ANSWER_STRATEGY.LOCAL_ONLY) {
+            sendLog("warning", `第 ${i + 1} 题本地未匹配，按策略跳过`);
+            continue;
+          }
           sendLog("info", `正在获取第 ${i + 1} 题的答案...`);
           answer = await getAIAnswerForQuestion(question);
         }
@@ -860,6 +877,30 @@ ${payload}`;
       }
     }
     return null;
+  }
+
+  async function loadAnswerStrategy() {
+    try {
+      const result = await chrome.storage.sync.get(["answerStrategy"]);
+      const value = result.answerStrategy;
+      if (Object.values(ANSWER_STRATEGY).includes(value)) {
+        return value;
+      }
+    } catch (_e) {
+      // ignore
+    }
+    return ANSWER_STRATEGY.LOCAL_FIRST;
+  }
+
+  function getStrategyLabel(strategy) {
+    switch (strategy) {
+      case ANSWER_STRATEGY.AI_ONLY:
+        return "仅 AI";
+      case ANSWER_STRATEGY.LOCAL_ONLY:
+        return "仅题库";
+      default:
+        return "优先题库，未命中用 AI";
+    }
   }
 
   // 根据选项元素向上查找题目容器（精确定位到单道题）
