@@ -14,6 +14,9 @@
   const sitePatternInput = document.getElementById('sitePattern');
   const siteNameInput = document.getElementById('siteName');
   const saveBindingBtn = document.getElementById('saveBindingBtn');
+  const saveBindingAllBtn = document.getElementById('saveBindingAllBtn');
+  const siteTemplateSelect = document.getElementById('siteTemplateSelect');
+  const siteTemplateHint = document.getElementById('siteTemplateHint');
   const importModal = document.getElementById('importModal');
   const importMessage = document.getElementById('importMessage');
   const importProgress = document.getElementById('importProgress');
@@ -32,6 +35,9 @@
 
   // 预览状态
   let previewData = [];
+  let siteTemplates = [];
+  const siteTemplateMap = new Map();
+  let selectedTemplateDomains = [];
 
   // Tab 切换
   document.querySelectorAll('.tab-item').forEach(tab => {
@@ -386,6 +392,37 @@
     renderBindingList();
   });
 
+  saveBindingAllBtn.addEventListener('click', async () => {
+    if (!siteTemplateSelect.value) {
+      alert('请先选择站点模板');
+      return;
+    }
+
+    const selectedBankIds = Array.from(
+      document.querySelectorAll('input[name="bindBank"]:checked')
+    ).map(cb => cb.value);
+
+    if (selectedBankIds.length === 0) {
+      alert('请至少选择一个题库');
+      return;
+    }
+
+    if (!selectedTemplateDomains.length) {
+      alert('模板未解析到域名，请手动填写后保存');
+      return;
+    }
+
+    const siteName = siteNameInput.value.trim() || selectedTemplateDomains[0];
+    for (const domain of selectedTemplateDomains) {
+      await QuestionBankManager.setBinding(domain, siteName, selectedBankIds);
+    }
+
+    sitePatternInput.value = '';
+    siteNameInput.value = '';
+    document.querySelectorAll('input[name="bindBank"]').forEach(cb => cb.checked = false);
+    renderBindingList();
+  });
+
   window.removeBinding = async function (pattern) {
     if (confirm(`确定删除站点「${pattern}」的关联？`)) {
       await QuestionBankManager.removeBinding(pattern);
@@ -394,6 +431,105 @@
   };
 
   // ============ 工具函数 ============
+
+  async function loadSiteTemplates() {
+    const builtInPaths = [
+      '/templates/wjx.json',
+      '/templates/tencent.json',
+      '/templates/wenjuan.json',
+    ];
+
+    const builtIn = await Promise.all(builtInPaths.map(fetchTemplateSafe));
+    const result = await chrome.storage.sync.get(['siteTemplates']);
+    const custom = Object.values(result.siteTemplates || {});
+
+    siteTemplates = [...builtIn.filter(Boolean), ...custom];
+    renderSiteTemplateSelect(siteTemplates);
+  }
+
+  async function fetchTemplateSafe(path) {
+    try {
+      const res = await fetch(chrome.runtime.getURL(path));
+      if (!res.ok) return null;
+      return await res.json();
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  function renderSiteTemplateSelect(templates) {
+    siteTemplateMap.clear();
+    siteTemplateSelect.innerHTML = '<option value="">选择站点模板（可选）</option>';
+
+    templates.forEach((tpl) => {
+      if (!tpl || !tpl.siteId) return;
+      siteTemplateMap.set(tpl.siteId, tpl);
+      const opt = document.createElement('option');
+      opt.value = tpl.siteId;
+      opt.textContent = tpl.siteName || tpl.siteId;
+      siteTemplateSelect.appendChild(opt);
+    });
+  }
+
+  function extractTemplateDomains(tpl) {
+    const domains = new Set();
+
+    if (tpl.domain) {
+      domains.add(normalizeDomain(tpl.domain));
+    }
+
+    if (Array.isArray(tpl.urlPatterns)) {
+      tpl.urlPatterns.forEach((p) => {
+        const m = String(p || '').match(/^https?:\/\/([^/]+)/i);
+        if (m && m[1]) domains.add(normalizeDomain(m[1]));
+      });
+    }
+
+    // 兜底：尝试从 urlRegex 中提取主域名
+    if (domains.size === 0 && tpl.urlRegex) {
+      const m = String(tpl.urlRegex).match(/([a-z0-9-]+)\\\.[a-z0-9-]+/i);
+      if (m && m[0]) domains.add(normalizeDomain(m[0].replace(/\\\./g, '.')));
+    }
+
+    return Array.from(domains).filter(Boolean);
+  }
+
+  function normalizeDomain(host) {
+    let h = String(host || '').toLowerCase().trim();
+    if (!h) return '';
+    h = h.replace(/^\\*\\./, '');
+    h = h.replace(/^www\\./, '');
+    h = h.replace(/^ks\\./, '');
+    return h;
+  }
+
+  siteTemplateSelect.addEventListener('change', () => {
+    const tplId = siteTemplateSelect.value;
+    siteTemplateHint.textContent = '';
+    selectedTemplateDomains = [];
+    saveBindingAllBtn.style.display = 'none';
+
+    if (!tplId) return;
+
+    const tpl = siteTemplateMap.get(tplId);
+    if (!tpl) return;
+
+    const domains = extractTemplateDomains(tpl);
+    selectedTemplateDomains = domains;
+    if (domains.length > 0) {
+      sitePatternInput.value = domains[0];
+      if (domains.length > 1) {
+        saveBindingAllBtn.style.display = '';
+      }
+      if (domains.length > 1) {
+        siteTemplateHint.textContent = `模板包含多个域名：${domains.join('、')}，如需请手动调整`;
+      }
+    }
+
+    if (tpl.siteName) {
+      siteNameInput.value = tpl.siteName;
+    }
+  });
 
   function escapeHtml(str) {
     const div = document.createElement('div');
@@ -410,4 +546,5 @@
   // 初始化
   renderBankList();
   renderBindingList();
+  loadSiteTemplates();
 })();

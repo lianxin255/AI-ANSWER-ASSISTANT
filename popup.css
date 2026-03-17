@@ -330,6 +330,15 @@ body {
   background: var(--secondary);
 }
 
+.model-actions-row {
+  display: flex;
+  gap: 8px;
+}
+
+.model-actions-row .btn {
+  flex: 1;
+}
+
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;

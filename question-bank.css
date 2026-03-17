@@ -155,6 +155,12 @@
   margin-bottom: 12px;
 }
 
+.form-hint {
+  font-size: 12px;
+  color: #6b7280;
+  margin: -6px 0 12px;
+}
+
 .input {
   flex: 1;
   padding: 8px 12px;
@@ -187,6 +193,11 @@
   font-size: 13px;
   color: #374151;
   cursor: pointer;
+}
+
+.binding-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .bank-select-list input[type="checkbox"] {
