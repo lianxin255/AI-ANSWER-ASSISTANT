@@ -242,12 +242,14 @@
       const buffer = await file.arrayBuffer();
       importProgress.style.width = '60%';
 
-      const { questions, formatType } = await XlsxParser.parse(buffer, {
+      const parsed = await XlsxParser.parse(buffer, {
         onAIFallback: async ({ headers, sampleRows }) => {
           importMessage.textContent = '格式未知，正在请求 AI 解析...';
           return await requestAIMapping(headers, sampleRows);
         }
       });
+      const { questions } = parsed;
+      const formatType = parsed.formatType || parsed.format || '未知';
 
       importProgress.style.width = '90%';
 
