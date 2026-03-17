@@ -106,7 +106,7 @@ class XlsxParser {
 
     let score = 0;
 
-    const stemIdx = this._findHeaderIndex(headers, ['题干', '题目', '题面', '标题', '试题', '内容']);
+    const stemIdx = this._findStemIndex(headers);
     const answerIdx = this._findHeaderIndex(headers, ['答案', '正确答案', '标准答案', '参考答案']);
     const typeIdx = this._findHeaderIndex(headers, ['题型', '类型']);
     const parseIdx = this._findHeaderIndex(headers, ['解析', '答案解析', '说明', '备注']);
@@ -131,11 +131,12 @@ class XlsxParser {
   }
 
   static _tryStructuredFormats(rows, options = {}) {
-    const headers = rows[0].map((h) => this._normHeader(h));
+    const rawHeaders = rows[0].map((h) => String(h || '').trim());
+    const headers = rawHeaders.map((h) => this._normHeader(h));
     const dataRows = rows.slice(1).filter((r) => r.some((x) => String(x || '').trim()));
     if (!dataRows.length) return null;
 
-    const format2 = this._tryFormatMultiColumn(headers, dataRows, options);
+    const format2 = this._tryFormatMultiColumn(headers, dataRows, rawHeaders, options);
     const format1 = this._tryFormatMergedOptions(headers, dataRows, options);
 
     if (format2 && format1) {
@@ -145,8 +146,8 @@ class XlsxParser {
     return format2 || format1 || null;
   }
 
-  static _tryFormatMultiColumn(headers, rows) {
-    const stemIdx = this._findHeaderIndex(headers, ['题干', '题目', '题面', '标题', '试题', '内容']);
+  static _tryFormatMultiColumn(headers, rows, rawHeaders = []) {
+    const stemIdx = this._findStemIndex(headers);
     const answerIdx = this._findHeaderIndex(headers, ['答案', '正确答案', '标准答案', '参考答案']);
     const typeIdx = this._findHeaderIndex(headers, ['题型', '类型']);
     const analysisIdx = this._findHeaderIndex(headers, ['解析', '答案解析', '说明', '备注']);
@@ -156,6 +157,22 @@ class XlsxParser {
     for (const key of ['a', 'b', 'c', 'd', 'e', 'f']) {
       const idx = this._findHeaderIndex(headers, [key, `选项${key}`, `${key}选项`, `${key}项`]);
       if (idx >= 0) optionIndices[key.toUpperCase()] = idx;
+    }
+
+    // 兼容 "选项1(A)" / "选项2(B)" 这类表头
+    if (Object.keys(optionIndices).length < 2 && rawHeaders.length) {
+      rawHeaders.forEach((h, idx) => {
+        const text = String(h || '').trim();
+        if (!text) return;
+        let m = text.match(/选项\s*\d*\s*[\(\[]?([A-F])[\)\]]?/i);
+        if (!m) {
+          m = text.match(/[\(\[]\s*([A-F])\s*[\)\]]/i);
+        }
+        if (m) {
+          const label = m[1].toUpperCase();
+          if (!optionIndices[label]) optionIndices[label] = idx;
+        }
+      });
     }
 
     if (stemIdx < 0 || Object.keys(optionIndices).length < 2) {
@@ -404,6 +421,37 @@ class XlsxParser {
     }
 
     return -1;
+  }
+
+  static _findStemIndex(headers) {
+    if (!Array.isArray(headers)) return -1;
+
+    const keywords = [
+      { key: '题目标题', score: 6 },
+      { key: '题目', score: 4 },
+      { key: '标题', score: 3 },
+      { key: '题面', score: 3 },
+      { key: '试题', score: 3 },
+      { key: '内容', score: 2 },
+      { key: '题干', score: 2 },
+      { key: '说明', score: -3 },
+    ];
+
+    let bestIdx = -1;
+    let bestScore = -Infinity;
+
+    headers.forEach((h, idx) => {
+      let score = 0;
+      for (const k of keywords) {
+        if (h.includes(k.key)) score += k.score;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = idx;
+      }
+    });
+
+    return bestScore > 0 ? bestIdx : -1;
   }
 
   static _normalizeType(raw) {
