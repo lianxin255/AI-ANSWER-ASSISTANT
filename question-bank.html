@@ -56,13 +56,22 @@
       <div class="tab-panel" id="panelBindings">
         <div class="binding-form" id="bindingForm">
           <div class="form-row">
+            <select id="siteTemplateSelect" class="input">
+              <option value="">选择站点模板（可选）</option>
+            </select>
+          </div>
+          <div class="form-hint" id="siteTemplateHint"></div>
+          <div class="form-row">
             <input type="text" id="sitePattern" placeholder="站点域名（如 www.wenjuan.group）" class="input">
             <input type="text" id="siteName" placeholder="站点名称（可选）" class="input input-short">
           </div>
           <div class="bank-select-list" id="bindBankSelect">
             <!-- 动态渲染题库复选框 -->
           </div>
-          <button class="btn btn-primary btn-sm" id="saveBindingBtn">保存关联</button>
+          <div class="binding-actions">
+            <button class="btn btn-primary btn-sm" id="saveBindingBtn">保存关联</button>
+            <button class="btn btn-secondary btn-sm" id="saveBindingAllBtn" style="display:none">一键创建模板全部域名</button>
+          </div>
         </div>
 
         <div class="binding-list" id="bindingList">

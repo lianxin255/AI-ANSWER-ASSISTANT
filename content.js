@@ -1232,23 +1232,40 @@ ${payload}`;
   function convertBankAnswer(bankQuestion, scannedQuestion) {
     const bankType = bankQuestion.type;
     const scanType = scannedQuestion.type;
-    const bankAnswerArray = bankQuestion.answerArray || [];
-    const rawAnswer = bankQuestion.answer || '';
+    const rawAnswer = bankQuestion.answer ?? '';
+
+    const parseLetterArray = (val) => {
+      if (Array.isArray(val)) return val;
+      if (typeof val !== 'string') return [];
+      const letters = val
+        .toUpperCase()
+        .replace(/[，,；;、\s]/g, '')
+        .match(/[A-F]/g);
+      return letters ? [...new Set(letters)] : [];
+    };
+
+    const bankAnswerArray = Array.isArray(rawAnswer)
+      ? rawAnswer
+      : (bankQuestion.answerArray || []);
 
     // 1. 填空题：直接使用答案文本
     if (scanType === 'fill') {
+      const fillAnswers = Array.isArray(rawAnswer)
+        ? rawAnswer
+        : (rawAnswer ? [rawAnswer] : []);
       return {
         success: true,
         type: 'fill',
-        answer: bankAnswerArray.length > 0 ? bankAnswerArray : [rawAnswer],
+        answer: fillAnswers.length > 0 ? fillAnswers : bankAnswerArray,
         explanation: '[本地题库]'
       };
     }
 
     // 2. 判断题→单选转换：题库答案是"对/错"，需要匹配页面选项
     if (bankType === 'judge' && scanType === 'single') {
-      const isCorrect = /^[对是√正确true✓]+$/i.test(rawAnswer.replace(/[,;、，；\s]/g, ''));
-      const isWrong = /^[错否×不正确false✗]+$/i.test(rawAnswer.replace(/[,;、，；\s]/g, ''));
+      const rawText = String(rawAnswer || '');
+      const isCorrect = /^[对是√正确true✓]+$/i.test(rawText.replace(/[,;、，；\s]/g, ''));
+      const isWrong = /^[错否×不正确false✗]+$/i.test(rawText.replace(/[,;、，；\s]/g, ''));
 
       if (isCorrect || isWrong) {
         // 尝试通过选项文本匹配
@@ -1267,10 +1284,11 @@ ${payload}`;
     }
 
     // 3. 选择题：答案已经是字母格式
-    if (bankAnswerArray.length > 0 && bankAnswerArray.every(a => /^[A-Z]$/i.test(a))) {
+    const letterArray = bankAnswerArray.length > 0 ? bankAnswerArray : parseLetterArray(rawAnswer);
+    if (letterArray.length > 0 && letterArray.every(a => /^[A-Z]$/i.test(a))) {
       const answer = scanType === 'single'
-        ? bankAnswerArray[0].toUpperCase()
-        : bankAnswerArray.map(a => a.toUpperCase());
+        ? letterArray[0].toUpperCase()
+        : letterArray.map(a => a.toUpperCase());
       return { success: true, type: scanType, answer, explanation: '[本地题库]' };
     }
 

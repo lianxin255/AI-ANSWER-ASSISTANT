@@ -110,6 +110,10 @@
         </div>
         <div class="modal-body">
           <div class="model-list" id="modelList"></div>
+          <div class="model-actions-row">
+            <button class="btn btn-outline btn-block" id="exportModelBtn">导出配置</button>
+            <button class="btn btn-outline btn-block" id="importModelBtn">导入配置</button>
+          </div>
           <button class="btn btn-outline btn-block" id="addModelBtn">
             <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
             <span>添加自定义模型</span>
@@ -117,6 +121,7 @@
         </div>
       </div>
     </div>
+    <input type="file" id="importModelFile" accept=".json" style="display:none">
 
     <!-- 添加/编辑模型浮层 -->
     <div class="modal" id="editModelModal">

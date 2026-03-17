@@ -16,6 +16,9 @@ const closeSettingsBtn = document.getElementById("closeSettingsBtn");
 const closeSettingsBackdrop = document.getElementById("closeSettingsBackdrop");
 const modelList = document.getElementById("modelList");
 const addModelBtn = document.getElementById("addModelBtn");
+const exportModelBtn = document.getElementById("exportModelBtn");
+const importModelBtn = document.getElementById("importModelBtn");
+const importModelFile = document.getElementById("importModelFile");
 
 // Edit Model Modal Elements
 const editModelModal = document.getElementById("editModelModal");
@@ -113,6 +116,63 @@ closeSettingsBackdrop.addEventListener("click", closeModal);
 addModelBtn.addEventListener("click", () => openEditModal());
 closeEditBtn.addEventListener("click", closeEditModal);
 closeEditBackdrop.addEventListener("click", closeEditModal);
+
+exportModelBtn.addEventListener("click", async () => {
+  const data = await chrome.storage.sync.get([
+    "aiModels",
+    "activeModelId",
+    "answerStrategy",
+  ]);
+  const payload = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    aiModels: data.aiModels || [],
+    activeModelId: data.activeModelId || BUILTIN_MODEL.id,
+    answerStrategy: data.answerStrategy || "local_first",
+  };
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "ai-answer-bot-config.json";
+  a.click();
+  URL.revokeObjectURL(url);
+  addLog("success", "配置已导出");
+});
+
+importModelBtn.addEventListener("click", () => {
+  importModelFile.value = "";
+  importModelFile.click();
+});
+
+importModelFile.addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  try {
+    const text = await file.text();
+    const json = JSON.parse(text);
+    const models = Array.isArray(json.aiModels) ? json.aiModels : [];
+    let activeModelId = json.activeModelId || BUILTIN_MODEL.id;
+    if (!models.find((m) => m.id === activeModelId)) {
+      activeModelId = models[0]?.id || BUILTIN_MODEL.id;
+    }
+
+    const updates = { aiModels: models, activeModelId };
+    if (json.answerStrategy) {
+      updates.answerStrategy = json.answerStrategy;
+    }
+
+    await chrome.storage.sync.set(updates);
+    renderModelList();
+    addLog("success", "配置已导入");
+  } catch (err) {
+    addLog("error", "导入失败：文件格式不正确");
+  }
+});
 
 // --- Template Management ---
 const openTemplatesBtn = document.getElementById("openTemplatesBtn");
@@ -381,16 +441,20 @@ saveModelBtn.addEventListener("click", async () => {
   const data = await chrome.storage.sync.get(["aiModels"]);
   const models = data.aiModels || [];
 
+  let savedModelId = null;
+
   if (editingModelId) {
     // Edit existing
     const index = models.findIndex((m) => m.id === editingModelId);
     if (index !== -1) {
       models[index] = { ...models[index], name, baseUrl, apiKey, model };
+      savedModelId = editingModelId;
     }
   } else {
     // Add new
+    savedModelId = "custom-" + Date.now();
     models.push({
-      id: "custom-" + Date.now(),
+      id: savedModelId,
       name,
       baseUrl,
       apiKey,
@@ -399,12 +463,16 @@ saveModelBtn.addEventListener("click", async () => {
     });
   }
 
-  await chrome.storage.sync.set({ aiModels: models });
+  const updates = { aiModels: models };
+  if (!editingModelId && savedModelId) {
+    updates.activeModelId = savedModelId;
+  }
+  await chrome.storage.sync.set(updates);
 
   setTimeout(() => {
     saveModelBtn.disabled = false;
     saveModelBtn.textContent = "保存";
-    showEditStatus("success", "保存成功");
+    showEditStatus("success", !editingModelId ? "保存成功，已设为当前模型" : "保存成功");
     setTimeout(() => {
       closeEditModal();
       renderModelList();
@@ -555,12 +623,61 @@ scanBtn.addEventListener("click", async () => {
       startBtn.disabled = false;
       addLog("success", `扫描完成: ${response.count} 题`);
       updateStatus("ready", "扫描完成");
+      if (response.count > 0 && !isRunning) {
+        addLog("info", "检测到题目，自动开始答题");
+        startAnsweringForTab(tab);
+      }
     } else {
       addLog("warning", response?.message || "未发现题目");
       updateStatus("ready", "未发现题目");
     }
   });
 });
+
+async function startAnsweringForTab(tab) {
+  // 检查是否是系统页面
+  if (
+    !tab.url ||
+    tab.url.startsWith("chrome://") ||
+    tab.url.startsWith("chrome-extension://") ||
+    tab.url.startsWith("edge://") ||
+    tab.url.startsWith("about:")
+  ) {
+    addLog("error", "请切换到有题目的网页");
+    return;
+  }
+
+  // 确保 content script 已注入
+  const injected = await ensureContentScriptInjected(tab.id);
+  if (!injected) {
+    addLog("error", "无法连接到页面，请刷新页面后重试");
+    return;
+  }
+
+  // Start
+  const activeModel = await getActiveModel();
+  const config = {
+    baseUrl: activeModel.baseUrl,
+    apiKey: activeModel.apiKey,
+    model: activeModel.model,
+  };
+
+  setRunningState(true);
+  addLog("info", "🚀 开始自动答题");
+  chrome.tabs.sendMessage(
+    tab.id,
+    {
+      action: "start",
+      config: config,
+    },
+    () => {
+      if (chrome.runtime.lastError) {
+        setRunningState(false);
+        addLog("error", "连接中断，请刷新页面后重试");
+      }
+    }
+  );
+}
 
 // 2. Start/Pause Toggle
 startBtn.addEventListener("click", async () => {
@@ -580,48 +697,7 @@ startBtn.addEventListener("click", async () => {
     addLog("warning", "已暂停答题");
     chrome.tabs.sendMessage(tab.id, { action: "stop" });
   } else {
-    // 检查是否是系统页面
-    if (
-      !tab.url ||
-      tab.url.startsWith("chrome://") ||
-      tab.url.startsWith("chrome-extension://") ||
-      tab.url.startsWith("edge://") ||
-      tab.url.startsWith("about:")
-    ) {
-      addLog("error", "请切换到有题目的网页");
-      return;
-    }
-
-    // 确保 content script 已注入
-    const injected = await ensureContentScriptInjected(tab.id);
-    if (!injected) {
-      addLog("error", "无法连接到页面，请刷新页面后重试");
-      return;
-    }
-
-    // Start
-    const activeModel = await getActiveModel();
-    const config = {
-      baseUrl: activeModel.baseUrl,
-      apiKey: activeModel.apiKey,
-      model: activeModel.model,
-    };
-
-    setRunningState(true);
-    addLog("info", "🚀 开始自动答题");
-    chrome.tabs.sendMessage(
-      tab.id,
-      {
-        action: "start",
-        config: config,
-      },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          setRunningState(false);
-          addLog("error", "连接中断，请刷新页面后重试");
-        }
-      }
-    );
+    await startAnsweringForTab(tab);
   }
 });
 
