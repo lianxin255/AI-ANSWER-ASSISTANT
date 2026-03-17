@@ -100,6 +100,73 @@ class QuestionBankMatcher {
     return null;
   }
 
+  /**
+   * 获取最相似题目（无阈值限制，不计入统计）
+   * @param {Object} question - 扫描到的题目 { text, options }
+   * @returns {{ question: Object, level: number, score: number } | null}
+   */
+  suggest(question) {
+    const stem = question.text || question.stem || '';
+    if (!stem) return null;
+
+    const normalized = XlsxParser.normalize(stem);
+
+    // 精确匹配
+    const exact = this._exactMap.get(normalized);
+    if (exact) {
+      return { question: exact, level: 1, score: 1.0 };
+    }
+
+    let best = null;
+    let bestScore = 0;
+    let bestLevel = 0;
+
+    // 包含匹配
+    for (const q of this._questions) {
+      const qNorm = q.stemNormalized;
+      if (!qNorm || qNorm.length < 5 || normalized.length < 5) continue;
+      if (normalized.includes(qNorm) || qNorm.includes(normalized)) {
+        const lenRatio = Math.min(normalized.length, qNorm.length) / Math.max(normalized.length, qNorm.length);
+        if (lenRatio > bestScore) {
+          bestScore = lenRatio;
+          best = q;
+          bestLevel = 2;
+        }
+      }
+    }
+
+    // 模糊匹配（无阈值）
+    if (normalized.length >= 5) {
+      const queryBigrams = QuestionBankMatcher._bigrams(normalized);
+      const candidates = this._questions.filter(q => {
+        const lenRatio = Math.min(normalized.length, q.stemNormalized.length) / Math.max(normalized.length, q.stemNormalized.length);
+        return lenRatio > 0.3;
+      });
+
+      for (const q of candidates) {
+        const qBigrams = QuestionBankMatcher._bigrams(q.stemNormalized);
+        let score = QuestionBankMatcher._jaccardSimilarity(queryBigrams, qBigrams);
+
+        if (question.options && question.options.length > 0 && q.options && q.options.length > 0) {
+          const optionBonus = QuestionBankMatcher._optionSimilarity(question.options, q.options);
+          score = score * 0.7 + optionBonus * 0.3;
+        }
+
+        if (score > bestScore) {
+          bestScore = score;
+          best = q;
+          bestLevel = 3;
+        }
+      }
+    }
+
+    if (best) {
+      return { question: best, level: bestLevel, score: bestScore };
+    }
+
+    return null;
+  }
+
   /** 记录匹配统计 */
   _recordMatch(bankId) {
     if (bankId && this._matchStats[bankId] !== undefined) {

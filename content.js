@@ -776,27 +776,43 @@ ${payload}`;
       );
 
       try {
-        // 先尝试本地题库匹配
         let answer = null;
         let isLocalMatch = false;
-        if (answerStrategy !== ANSWER_STRATEGY.AI_ONLY && window.questionBankMatcher && window.questionBankMatcher.isLoaded()) {
-          const match = window.questionBankMatcher.match(question);
-          if (match) {
-            // 转换题库答案为可应用的格式
-            answer = convertBankAnswer(match.question, question);
-            isLocalMatch = true;
-            sendLog("success", `第 ${i + 1} 题本地匹配成功（级别${match.level}，相似度${(match.score * 100).toFixed(0)}%）`);
-          }
+        let candidate = null;
+
+        if (window.questionBankMatcher && window.questionBankMatcher.isLoaded()) {
+          candidate = window.questionBankMatcher.suggest(question);
         }
 
-        // 本地未匹配，调用 AI
-        if (!answer) {
-          if (answerStrategy === ANSWER_STRATEGY.LOCAL_ONLY) {
+        if (answerStrategy === ANSWER_STRATEGY.LOCAL_ONLY) {
+          if (window.questionBankMatcher && window.questionBankMatcher.isLoaded()) {
+            const match = window.questionBankMatcher.match(question);
+            if (match) {
+              answer = convertBankAnswer(match.question, question);
+              isLocalMatch = true;
+              sendLog("success", `第 ${i + 1} 题本地匹配成功（级别${match.level}，相似度${(match.score * 100).toFixed(0)}%）`);
+            }
+          }
+          if (!answer) {
             sendLog("warning", `第 ${i + 1} 题本地未匹配，按策略跳过`);
             continue;
           }
+        } else {
+          if (candidate) {
+            sendLog("info", `已找到相似题库候选（相似度${(candidate.score * 100).toFixed(0)}%），交给AI判断`);
+          }
           sendLog("info", `正在获取第 ${i + 1} 题的答案...`);
-          answer = await getAIAnswerForQuestion(question);
+          try {
+            answer = await getAIAnswerForQuestion(question, { bankCandidate: candidate });
+          } catch (e) {
+            if (candidate) {
+              answer = convertBankAnswer(candidate.question, question);
+              isLocalMatch = true;
+              sendLog("warning", `AI 失败，已回退使用题库答案`);
+            } else {
+              throw e;
+            }
+          }
         }
 
         if (answer && answer.answer) {
@@ -1129,7 +1145,7 @@ ${payload}`;
   }
 
   // 逐题获取AI答案（只发送单道题目，不发送整页HTML）
-  async function getAIAnswerForQuestion(question) {
+  async function getAIAnswerForQuestion(question, context = {}) {
     let prompt = `请回答以下${getTypeLabel(question.type)}：\n\n`;
     prompt += `题目：${question.text}\n\n`;
 
@@ -1147,6 +1163,28 @@ ${payload}`;
       question.inputs.length > 1
     ) {
       prompt += `（共有 ${question.inputs.length} 个空需要填写）\n\n`;
+    }
+
+    if (context && context.bankCandidate) {
+      const cand = context.bankCandidate;
+      const c = cand.question || {};
+      const score = typeof cand.score === "number" ? (cand.score * 100).toFixed(0) + "%" : "未知";
+      prompt += `以下是本地题库中最相似的一道题（仅供参考，可能不完全一致）：\n`;
+      prompt += `相似度：${score}\n`;
+      prompt += `题库题目：${c.stem || ""}\n`;
+      if (c.options && c.options.length > 0) {
+        prompt += "题库选项：\n";
+        c.options.forEach((opt) => {
+          prompt += `${opt.label}. ${opt.text}\n`;
+        });
+      }
+      if (c.answer !== undefined && c.answer !== null) {
+        prompt += `题库答案：${Array.isArray(c.answer) ? c.answer.join(",") : c.answer}\n`;
+      }
+      if (c.analysis) {
+        prompt += `题库解析：${c.analysis}\n`;
+      }
+      prompt += `请综合判断并输出最终答案。\n\n`;
     }
 
     prompt += `请严格按照JSON格式返回答案：
