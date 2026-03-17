@@ -915,7 +915,7 @@ ${payload}`;
       case ANSWER_STRATEGY.LOCAL_ONLY:
         return "仅题库";
       default:
-        return "优先题库，未命中用 AI";
+        return "AI 参考题库决策";
     }
   }
 
