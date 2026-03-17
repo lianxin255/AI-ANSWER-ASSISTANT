@@ -205,6 +205,32 @@ body {
   height: 14px;
 }
 
+/* Strategy Selector */
+.strategy-selector {
+  background: var(--secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.strategy-selector select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: white;
+  font-size: 12px;
+  color: var(--text-main);
+}
+
+.strategy-hint {
+  font-size: 11px;
+  color: var(--text-light);
+}
+
 .stat-card {
   padding: 16px;
   border-radius: var(--radius-lg);

@@ -1,307 +1,564 @@
-/**
- * XLSX 文件解析器
- * 自动识别两种已知题库格式，AI 兜底未知格式
- */
 class XlsxParser {
-  /**
-   * 解析文件 ArrayBuffer，返回标准化题目数组
-   * @param {ArrayBuffer} buffer - 文件二进制数据
-   * @param {Object} [options] - 选项
-   * @param {Function} [options.onAIFallback] - AI 兜底回调，接收 (headers, sampleRows)，返回列映射
-   * @returns {Promise<{questions: Array, formatType: string}>}
-   */
   static async parse(buffer, options = {}) {
     const workbook = XLSX.read(buffer, { type: 'array' });
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-
-    // 过滤空行
-    const dataRows = rows.filter(row => row.some(cell => String(cell).trim()));
-    if (dataRows.length < 2) {
-      throw new Error('文件内容为空或行数不足');
+    if (!workbook || !workbook.SheetNames || !workbook.SheetNames.length) {
+      throw new Error('Excel 文件为空或无法读取');
     }
 
-    const headers = dataRows[0].map(h => String(h).trim());
-    const bodyRows = dataRows.slice(1);
+    const sheetCandidate = this._pickBestSheet(workbook, options);
+    if (!sheetCandidate) {
+      throw new Error('未找到有效题库工作表');
+    }
 
-    // 尝试格式1
-    const format1 = XlsxParser._tryFormat1(headers, bodyRows);
-    if (format1) return format1;
+    const { sheetName, rows } = sheetCandidate;
+    if (!rows.length) {
+      throw new Error(`工作表 ${sheetName} 中没有可用数据`);
+    }
 
-    // 尝试格式2
-    const format2 = XlsxParser._tryFormat2(headers, bodyRows);
-    if (format2) return format2;
+    let result = this._tryStructuredFormats(rows, { sheetName, ...options });
+    if (result && result.questions && result.questions.length) {
+      return {
+        ...result,
+        sheetName,
+        total: result.questions.length,
+      };
+    }
 
-    // AI 兜底
-    if (options.onAIFallback) {
-      const sampleRows = bodyRows.slice(0, 5);
-      const mapping = await options.onAIFallback(headers, sampleRows);
-      if (mapping) {
-        return XlsxParser._parseWithMapping(headers, bodyRows, mapping);
+    if (typeof options.onAIFallback === 'function') {
+      const payload = {
+        sheetName,
+        headers: rows[0] || [],
+        sampleRows: rows.slice(1, 6),
+      };
+
+      try {
+        const mapping = await options.onAIFallback(payload);
+        if (mapping) {
+          result = this._parseWithMapping(rows, mapping, { sheetName, ...options });
+          if (result && result.questions && result.questions.length) {
+            return {
+              ...result,
+              sheetName,
+              total: result.questions.length,
+            };
+          }
+        }
+      } catch (_e) {
+        // AI 映射失败则继续报错给上层处理
       }
     }
 
-    throw new Error('无法识别题库格式，且 AI 解析失败');
+    throw new Error(`无法识别题库格式：${sheetName}`);
   }
 
-  /**
-   * 格式1: 序号 | 题型 | 题干 | 选项(A-xxx|B-xxx) | 答案
-   * 特征: 有一列包含 | 或 - 分隔的选项文本
-   */
-  static _tryFormat1(headers, rows) {
-    // 查找选项合并列（包含 A- 或 A. 开头的多选项文本）
-    const sampleRow = rows[0];
-    let optionColIdx = -1;
-    let stemColIdx = -1;
-    let typeColIdx = -1;
-    let answerColIdx = -1;
-
-    for (let i = 0; i < headers.length; i++) {
-      const h = headers[i].toLowerCase();
-      const val = String(sampleRow[i] || '');
-
-      if (h.includes('题型') || h.includes('类型') || h === 'type') {
-        typeColIdx = i;
-      } else if (h.includes('题干') || h.includes('题目') || h.includes('题面')) {
-        stemColIdx = i;
-      } else if (h.includes('答案') || h.includes('正确') || h === 'answer') {
-        answerColIdx = i;
-      } else if (/[A-D][-.、]/.test(val) && (val.includes('|') || val.includes('\n') || /[A-D][-.、].*[A-D][-.、]/.test(val))) {
-        optionColIdx = i;
-      }
-    }
-
-    // 如果没通过表头找到，尝试通过内容推断
-    if (stemColIdx === -1) {
-      for (let i = 0; i < sampleRow.length; i++) {
-        const val = String(sampleRow[i] || '');
-        if (i !== optionColIdx && i !== typeColIdx && i !== answerColIdx && val.length > 10) {
-          stemColIdx = i;
-          break;
-        }
-      }
-    }
-
-    if (answerColIdx === -1) {
-      // 答案列通常在最后，内容为短字母
-      for (let i = headers.length - 1; i >= 0; i--) {
-        const val = String(sampleRow[i] || '').trim();
-        if (i !== optionColIdx && i !== stemColIdx && i !== typeColIdx && /^[A-Z,;、\s]+$/.test(val)) {
-          answerColIdx = i;
-          break;
-        }
-      }
-    }
-
-    if (stemColIdx === -1 || answerColIdx === -1) return null;
-
-    const questions = [];
-    for (const row of rows) {
-      const stem = String(row[stemColIdx] || '').trim();
-      if (!stem) continue;
-
-      const rawType = typeColIdx >= 0 ? String(row[typeColIdx] || '').trim() : '';
-      const type = XlsxParser._normalizeType(rawType);
-      const rawAnswer = String(row[answerColIdx] || '').trim();
-      const options = optionColIdx >= 0 ? XlsxParser._parseMergedOptions(String(row[optionColIdx] || '')) : [];
-
-      questions.push(XlsxParser._buildQuestion(stem, type, options, rawAnswer));
-    }
-
-    return { questions, formatType: 'format1' };
+  static normalize(text) {
+    return String(text || '')
+      .replace(/^\s*\d+[\.\-、．\)]\s*/, '')
+      .replace(/[“”"'‘’【】\[\]（）()]/g, '')
+      .replace(/\s+/g, '')
+      .replace(/[，,。.!！?？:：;；、]/g, '')
+      .trim()
+      .toLowerCase();
   }
 
-  /**
-   * 格式2: 题型 | 题目标题 | 选项1(A) | 选项2(B) | ... | 正确答案
-   * 特征: 多列分别是选项内容，最后一列是答案
-   */
-  static _tryFormat2(headers, rows) {
-    // 寻找选项列模式（连续列，表头包含 A/B/C/D 或 选项1/选项2）
-    let typeColIdx = -1;
-    let stemColIdx = -1;
-    let answerColIdx = -1;
-    let optionStartIdx = -1;
-    let optionEndIdx = -1;
-
-    for (let i = 0; i < headers.length; i++) {
-      const h = headers[i];
-      if (/题型|类型/.test(h)) typeColIdx = i;
-      else if (/题目|题干|题面|标题/.test(h)) stemColIdx = i;
-      else if (/正确答案|答案|标准答案/.test(h)) answerColIdx = i;
-      else if (/^[Aa]$|选项\s*1|选项\s*[Aa]|^A选项/.test(h)) optionStartIdx = i;
+  static hash(text) {
+    const s = this.normalize(text);
+    let h = 0;
+    for (let i = 0; i < s.length; i++) {
+      h = (h << 5) - h + s.charCodeAt(i);
+      h |= 0;
     }
-
-    if (optionStartIdx === -1) {
-      // 尝试检测：连续几列表头为 A/B/C/D
-      for (let i = 0; i < headers.length - 1; i++) {
-        if (/^[Aa]$/.test(headers[i]) && /^[Bb]$/.test(headers[i + 1])) {
-          optionStartIdx = i;
-          break;
-        }
-      }
-    }
-
-    if (stemColIdx === -1 || answerColIdx === -1 || optionStartIdx === -1) return null;
-
-    // 确定选项列范围
-    optionEndIdx = answerColIdx - 1;
-    if (optionEndIdx < optionStartIdx) optionEndIdx = optionStartIdx + 3; // 默认4个选项
-
-    const optionLabels = 'ABCDEFGHIJ';
-    const questions = [];
-
-    for (const row of rows) {
-      const stem = String(row[stemColIdx] || '').trim();
-      if (!stem) continue;
-
-      const rawType = typeColIdx >= 0 ? String(row[typeColIdx] || '').trim() : '';
-      const type = XlsxParser._normalizeType(rawType);
-      const rawAnswer = String(row[answerColIdx] || '').trim();
-
-      const options = [];
-      for (let i = optionStartIdx; i <= optionEndIdx && i < row.length; i++) {
-        const text = String(row[i] || '').trim();
-        if (text) {
-          options.push({
-            label: optionLabels[i - optionStartIdx] || String.fromCharCode(65 + i - optionStartIdx),
-            text
-          });
-        }
-      }
-
-      questions.push(XlsxParser._buildQuestion(stem, type, options, rawAnswer));
-    }
-
-    return { questions, formatType: 'format2' };
+    return String(h);
   }
 
-  /**
-   * 使用 AI 返回的列映射解析
-   * @param {Array} headers
-   * @param {Array} rows
-   * @param {Object} mapping - { stem, type?, options?, optionStart?, optionEnd?, answer }
-   */
-  static _parseWithMapping(headers, rows, mapping) {
-    const getIdx = (name) => {
-      if (typeof name === 'number') return name;
-      return headers.findIndex(h => h === name || h.includes(name));
-    };
+  static _pickBestSheet(workbook) {
+    let best = null;
 
-    const stemIdx = getIdx(mapping.stem);
-    const typeIdx = mapping.type != null ? getIdx(mapping.type) : -1;
-    const answerIdx = getIdx(mapping.answer);
+    for (const sheetName of workbook.SheetNames) {
+      const ws = workbook.Sheets[sheetName];
+      if (!ws) continue;
 
-    if (stemIdx === -1 || answerIdx === -1) {
-      throw new Error('AI 映射的列名无法在表头中找到');
+      const rows = XLSX.utils.sheet_to_json(ws, {
+        header: 1,
+        raw: false,
+        defval: '',
+        blankrows: false,
+      });
+
+      const cleaned = rows
+        .map((row) => (Array.isArray(row) ? row.map((v) => String(v ?? '').trim()) : []))
+        .filter((row) => row.some((cell) => String(cell || '').trim()));
+
+      if (cleaned.length < 2) continue;
+
+      const score = this._scoreSheet(cleaned);
+      if (!best || score > best.score) {
+        best = { sheetName, rows: cleaned, score };
+      }
     }
 
-    const optionLabels = 'ABCDEFGHIJ';
+    return best;
+  }
+
+  static _scoreSheet(rows) {
+    const headers = (rows[0] || []).map((h) => this._normHeader(h));
+    const sampleRows = rows.slice(1, 8);
+
+    let score = 0;
+
+    const stemIdx = this._findHeaderIndex(headers, ['题干', '题目', '题面', '标题', '试题', '内容']);
+    const answerIdx = this._findHeaderIndex(headers, ['答案', '正确答案', '标准答案', '参考答案']);
+    const typeIdx = this._findHeaderIndex(headers, ['题型', '类型']);
+    const parseIdx = this._findHeaderIndex(headers, ['解析', '答案解析', '说明', '备注']);
+
+    if (stemIdx >= 0) score += 5;
+    if (answerIdx >= 0) score += 5;
+    if (typeIdx >= 0) score += 2;
+    if (parseIdx >= 0) score += 1;
+
+    const optionHeaders = ['a', 'b', 'c', 'd', 'e', 'f'].filter((k) => headers.includes(k));
+    score += optionHeaders.length * 2;
+
+    const avgCols =
+      sampleRows.length > 0
+        ? sampleRows.reduce((sum, row) => sum + row.filter(Boolean).length, 0) / sampleRows.length
+        : 0;
+
+    if (avgCols >= 3) score += 2;
+    if (rows.length >= 10) score += 2;
+
+    return score;
+  }
+
+  static _tryStructuredFormats(rows, options = {}) {
+    const headers = rows[0].map((h) => this._normHeader(h));
+    const dataRows = rows.slice(1).filter((r) => r.some((x) => String(x || '').trim()));
+    if (!dataRows.length) return null;
+
+    const format2 = this._tryFormatMultiColumn(headers, dataRows, options);
+    const format1 = this._tryFormatMergedOptions(headers, dataRows, options);
+
+    if (format2 && format1) {
+      return format2.score >= format1.score ? format2 : format1;
+    }
+
+    return format2 || format1 || null;
+  }
+
+  static _tryFormatMultiColumn(headers, rows) {
+    const stemIdx = this._findHeaderIndex(headers, ['题干', '题目', '题面', '标题', '试题', '内容']);
+    const answerIdx = this._findHeaderIndex(headers, ['答案', '正确答案', '标准答案', '参考答案']);
+    const typeIdx = this._findHeaderIndex(headers, ['题型', '类型']);
+    const analysisIdx = this._findHeaderIndex(headers, ['解析', '答案解析', '说明', '备注']);
+    const scoreIdx = this._findHeaderIndex(headers, ['分值', '分数']);
+
+    const optionIndices = {};
+    for (const key of ['a', 'b', 'c', 'd', 'e', 'f']) {
+      const idx = this._findHeaderIndex(headers, [key, `选项${key}`, `${key}选项`, `${key}项`]);
+      if (idx >= 0) optionIndices[key.toUpperCase()] = idx;
+    }
+
+    if (stemIdx < 0 || Object.keys(optionIndices).length < 2) {
+      return null;
+    }
+
     const questions = [];
+    let hit = 0;
 
     for (const row of rows) {
       const stem = String(row[stemIdx] || '').trim();
       if (!stem) continue;
 
-      const rawType = typeIdx >= 0 ? String(row[typeIdx] || '').trim() : '';
-      const type = XlsxParser._normalizeType(rawType);
-      const rawAnswer = String(row[answerIdx] || '').trim();
-
-      let options = [];
-      if (mapping.options != null) {
-        // 选项合并在一列
-        const optIdx = getIdx(mapping.options);
-        if (optIdx >= 0) options = XlsxParser._parseMergedOptions(String(row[optIdx] || ''));
-      } else if (mapping.optionStart != null) {
-        // 选项分列
-        const startIdx = getIdx(mapping.optionStart);
-        const endIdx = mapping.optionEnd != null ? getIdx(mapping.optionEnd) : answerIdx - 1;
-        for (let i = startIdx; i <= endIdx && i < row.length; i++) {
-          const text = String(row[i] || '').trim();
-          if (text) {
-            options.push({ label: optionLabels[i - startIdx], text });
-          }
+      const options = [];
+      for (const [label, idx] of Object.entries(optionIndices)) {
+        const val = String(row[idx] || '').trim();
+        if (val) {
+          options.push({ label, text: val });
         }
       }
 
-      questions.push(XlsxParser._buildQuestion(stem, type, options, rawAnswer));
+      const rawAnswer = answerIdx >= 0 ? row[answerIdx] : '';
+      let type = this._normalizeType(typeIdx >= 0 ? row[typeIdx] : '');
+      if (!type) {
+        type = this._inferTypeFromRow({ rawAnswer, options });
+      }
+
+      const answer = this._parseAnswer(rawAnswer, type);
+      const analysis = analysisIdx >= 0 ? String(row[analysisIdx] || '').trim() : '';
+      const score = scoreIdx >= 0 ? this._toNumber(row[scoreIdx]) : null;
+
+      questions.push({
+        type,
+        stem,
+        stemNormalized: this.normalize(stem),
+        hash: this.hash(stem),
+        options,
+        answer,
+        analysis,
+        score,
+      });
+
+      if (answer || options.length >= 2) hit++;
     }
 
-    return { questions, formatType: 'ai_mapped' };
+    if (!questions.length) return null;
+
+    return {
+      format: 'multi-column-options',
+      score: hit + 20,
+      questions,
+    };
   }
 
-  /** 解析合并选项文本 "A-xxx|B-xxx" 或 "A.xxx\nB.xxx" */
-  static _parseMergedOptions(text) {
-    if (!text.trim()) return [];
-    // 尝试按 | 或换行分割
-    let parts = text.split(/[|\n]/);
-    if (parts.length <= 1) {
-      // 尝试按 "B-" "C-" 等位置分割
-      parts = text.split(/(?=[A-Z][-.、])/).filter(Boolean);
+  static _tryFormatMergedOptions(headers, rows) {
+    const stemIdx = this._findHeaderIndex(headers, ['题干', '题目', '题面', '标题', '试题', '内容']);
+    const typeIdx = this._findHeaderIndex(headers, ['题型', '类型']);
+    const answerIdx =
+      this._findHeaderIndex(headers, ['答案', '正确答案', '标准答案', '参考答案']) ??
+      -1;
+
+    let mergedOptionIdx = this._findHeaderIndex(headers, ['选项', '备选项', '候选项', '答案选项']);
+
+    const sampleRows = rows.slice(0, 8);
+
+    if (mergedOptionIdx < 0) {
+      let bestIdx = -1;
+      let bestScore = -1;
+      for (let i = 0; i < headers.length; i++) {
+        if (i === stemIdx || i === typeIdx || i === answerIdx) continue;
+
+        let score = 0;
+        for (const row of sampleRows) {
+          const val = String(row[i] || '').trim();
+          if (this._looksLikeMergedOptions(val)) score++;
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          bestIdx = i;
+        }
+      }
+      if (bestScore >= 2) mergedOptionIdx = bestIdx;
     }
 
-    return parts.map(part => {
-      const trimmed = part.trim();
-      const match = trimmed.match(/^([A-Z])[-.、:：\s]\s*(.*)/);
-      if (match) return { label: match[1], text: match[2].trim() };
-      return null;
-    }).filter(Boolean);
+    if (stemIdx < 0 || mergedOptionIdx < 0) return null;
+
+    let inferredAnswerIdx = answerIdx;
+    if (inferredAnswerIdx < 0) {
+      inferredAnswerIdx = this._guessAnswerColumn(headers, rows, [stemIdx, typeIdx, mergedOptionIdx]);
+    }
+
+    const analysisIdx = this._findHeaderIndex(headers, ['解析', '答案解析', '说明', '备注']);
+    const scoreIdx = this._findHeaderIndex(headers, ['分值', '分数']);
+
+    const questions = [];
+    let hit = 0;
+
+    for (const row of rows) {
+      const stem = String(row[stemIdx] || '').trim();
+      if (!stem) continue;
+
+      const mergedOptions = String(row[mergedOptionIdx] || '').trim();
+      const options = this._parseMergedOptions(mergedOptions);
+      const rawAnswer = inferredAnswerIdx >= 0 ? row[inferredAnswerIdx] : '';
+
+      let type = this._normalizeType(typeIdx >= 0 ? row[typeIdx] : '');
+      if (!type) {
+        type = this._inferTypeFromRow({ rawAnswer, options });
+      }
+
+      const answer = this._parseAnswer(rawAnswer, type);
+      const analysis = analysisIdx >= 0 ? String(row[analysisIdx] || '').trim() : '';
+      const score = scoreIdx >= 0 ? this._toNumber(row[scoreIdx]) : null;
+
+      questions.push({
+        type,
+        stem,
+        stemNormalized: this.normalize(stem),
+        hash: this.hash(stem),
+        options,
+        answer,
+        analysis,
+        score,
+      });
+
+      if (answer || options.length >= 2) hit++;
+    }
+
+    if (!questions.length) return null;
+
+    return {
+      format: 'merged-options',
+      score: hit + 10,
+      questions,
+    };
   }
 
-  /** 标准化题型 */
+  static _parseWithMapping(rows, mapping) {
+    const headers = rows[0].map((h) => String(h || '').trim());
+    const dataRows = rows.slice(1).filter((r) => r.some((x) => String(x || '').trim()));
+
+    const getIdx = (nameOrList) => {
+      if (!nameOrList) return -1;
+      const wanted = Array.isArray(nameOrList) ? nameOrList : [nameOrList];
+
+      for (const want of wanted) {
+        const exact = headers.findIndex((h) => h === want);
+        if (exact >= 0) return exact;
+      }
+
+      const normHeaders = headers.map((h) => this._normHeader(h));
+      for (const want of wanted) {
+        const n = this._normHeader(want);
+        const exactNorm = normHeaders.findIndex((h) => h === n);
+        if (exactNorm >= 0) return exactNorm;
+      }
+
+      for (const want of wanted) {
+        const n = this._normHeader(want);
+        const fuzzy = normHeaders.findIndex((h) => h.includes(n) || n.includes(h));
+        if (fuzzy >= 0) return fuzzy;
+      }
+
+      return -1;
+    };
+
+    const stemIdx = getIdx(mapping.stem || ['题干', '题目']);
+    const answerIdx = getIdx(mapping.answer || ['答案']);
+    const typeIdx = getIdx(mapping.type || ['题型']);
+    const analysisIdx = getIdx(mapping.analysis || ['解析']);
+    const scoreIdx = getIdx(mapping.score || ['分值']);
+    const mergedOptionIdx = getIdx(mapping.options || ['选项']);
+
+    const optionIndices = {};
+    for (const key of ['A', 'B', 'C', 'D', 'E', 'F']) {
+      const idx = getIdx(mapping[key] || [key, `选项${key.toLowerCase()}`, `${key}选项`]);
+      if (idx >= 0) optionIndices[key] = idx;
+    }
+
+    if (stemIdx < 0) {
+      throw new Error('AI 映射结果缺少题干列');
+    }
+
+    const questions = [];
+    for (const row of dataRows) {
+      const stem = String(row[stemIdx] || '').trim();
+      if (!stem) continue;
+
+      let options = [];
+      for (const [label, idx] of Object.entries(optionIndices)) {
+        const val = String(row[idx] || '').trim();
+        if (val) options.push({ label, text: val });
+      }
+
+      if (!options.length && mergedOptionIdx >= 0) {
+        options = this._parseMergedOptions(String(row[mergedOptionIdx] || '').trim());
+      }
+
+      const rawAnswer = answerIdx >= 0 ? row[answerIdx] : '';
+      let type = this._normalizeType(typeIdx >= 0 ? row[typeIdx] : '');
+      if (!type) {
+        type = this._inferTypeFromRow({ rawAnswer, options });
+      }
+
+      questions.push({
+        type,
+        stem,
+        stemNormalized: this.normalize(stem),
+        hash: this.hash(stem),
+        options,
+        answer: this._parseAnswer(rawAnswer, type),
+        analysis: analysisIdx >= 0 ? String(row[analysisIdx] || '').trim() : '',
+        score: scoreIdx >= 0 ? this._toNumber(row[scoreIdx]) : null,
+      });
+    }
+
+    return {
+      format: 'ai-mapping',
+      score: questions.length,
+      questions,
+    };
+  }
+
+  static _normHeader(h) {
+    return String(h || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '')
+      .replace(/[：:（）()\[\]【】]/g, '')
+      .replace(/^列/, '');
+  }
+
+  static _findHeaderIndex(headers, aliases) {
+    if (!Array.isArray(headers) || !Array.isArray(aliases)) return -1;
+
+    const normAliases = aliases.map((a) => this._normHeader(a));
+
+    for (const alias of normAliases) {
+      const exact = headers.findIndex((h) => h === alias);
+      if (exact >= 0) return exact;
+    }
+
+    for (const alias of normAliases) {
+      const fuzzy = headers.findIndex((h) => h.includes(alias) || alias.includes(h));
+      if (fuzzy >= 0) return fuzzy;
+    }
+
+    return -1;
+  }
+
   static _normalizeType(raw) {
-    if (/单[选择]|single/i.test(raw)) return 'single';
-    if (/多[选择]|multiple/i.test(raw)) return 'multiple';
-    if (/判断|是非|对错|true.*false|bool/i.test(raw)) return 'judge';
-    if (/填空|blank|fill/i.test(raw)) return 'fill';
-    return 'single'; // 默认单选
+    const t = String(raw || '').trim().toLowerCase();
+    if (!t) return '';
+
+    if (/单选|single|radio/.test(t)) return 'single';
+    if (/多选|multiple|multi|checkbox/.test(t)) return 'multiple';
+    if (/判断|是非|truefalse|judge/.test(t)) return 'judge';
+    if (/填空|简答|问答|主观|文本|text|blank/.test(t)) return 'fill';
+
+    return '';
   }
 
-  /** 构建标准化题目对象 */
-  static _buildQuestion(stem, type, options, rawAnswer) {
-    const id = XlsxParser._hashStem(stem);
-    const stemNormalized = XlsxParser.normalize(stem);
+  static _inferTypeFromRow({ rawAnswer, options }) {
+    const ans = String(rawAnswer || '').trim();
 
-    // 解析答案为数组
-    const answerArray = XlsxParser._parseAnswer(rawAnswer, type);
+    if (/^(对|错|正确|错误|是|否|√|×|true|false)$/i.test(ans)) {
+      return 'judge';
+    }
 
-    return { id, type, stem, stemNormalized, options, answer: rawAnswer, answerArray };
+    const compact = ans
+      .replace(/[，,；;、\s]/g, '')
+      .toUpperCase();
+
+    if (/^[A-F]{2,}$/.test(compact)) {
+      return 'multiple';
+    }
+
+    if (/^[A-F]$/.test(compact)) {
+      return 'single';
+    }
+
+    if (Array.isArray(options) && options.length >= 2) {
+      return 'fill';
+    }
+
+    return 'fill';
   }
 
-  /** 解析答案字符串为数组 */
   static _parseAnswer(raw, type) {
-    if (!raw) return [];
-    const cleaned = raw.replace(/[,;、，；\s]/g, '');
+    const text = String(raw || '').trim();
+    if (!text) return '';
+
     if (type === 'judge') {
-      if (/^[对是√正确truecorrect✓]+$/i.test(cleaned)) return ['对'];
-      if (/^[错否×不正确falsewrong✗]+$/i.test(cleaned)) return ['错'];
-      return [cleaned];
+      if (/^(对|正确|是|√|true)$/i.test(text)) return true;
+      if (/^(错|错误|否|×|false)$/i.test(text)) return false;
+      return text;
     }
-    // 选择题：拆分为单个字母
-    const letters = cleaned.match(/[A-Z]/gi);
-    if (letters) return letters.map(l => l.toUpperCase());
-    return [raw.trim()];
+
+    if (type === 'single') {
+      const m = text.toUpperCase().match(/[A-F]/);
+      return m ? m[0] : text;
+    }
+
+    if (type === 'multiple') {
+      const arr = text
+        .toUpperCase()
+        .replace(/[，,；;、\s]/g, '')
+        .match(/[A-F]/g);
+      return arr ? [...new Set(arr)] : text;
+    }
+
+    return text;
   }
 
-  /** 归一化题干：去题号、去标点、去空格、统一小写 */
-  static normalize(text) {
-    return text
-      .replace(/^[\d\s.、）)]+/, '')       // 去题号
-      .replace(/[（()）【】\[\]《》<>""''「」『』]/g, '') // 去括号引号
-      .replace(/[,;.!?，；。！？：:、\s\u3000\t\r\n]+/g, '') // 去标点空格
-      .toLowerCase();
+  static _guessAnswerColumn(headers, rows, excludedIdx = []) {
+    const sampleRows = rows.slice(0, 8);
+    let bestIdx = -1;
+    let bestScore = -1;
+
+    for (let i = 0; i < headers.length; i++) {
+      if (excludedIdx.includes(i)) continue;
+
+      let score = 0;
+      for (const row of sampleRows) {
+        const val = String(row[i] || '').trim();
+        if (!val) continue;
+
+        if (/^(对|错|正确|错误|是|否|√|×|true|false)$/i.test(val)) score += 3;
+        else if (/^[A-F]$/i.test(val)) score += 3;
+        else if (/^[A-F][,，、;；\s]*[A-F]+$/i.test(val)) score += 4;
+        else if (/^[A-F]{2,}$/i.test(val)) score += 4;
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+
+    return bestScore >= 4 ? bestIdx : -1;
   }
 
-  /** 简单字符串哈希 */
-  static _hashStem(stem) {
-    let hash = 0;
-    const s = XlsxParser.normalize(stem);
-    for (let i = 0; i < s.length; i++) {
-      hash = ((hash << 5) - hash + s.charCodeAt(i)) | 0;
+  static _looksLikeMergedOptions(text) {
+    const t = String(text || '').trim();
+    if (!t) return false;
+
+    return (
+      /A[\.\-:：、）)]/.test(t) ||
+      /B[\.\-:：、）)]/.test(t) ||
+      /\bA\b.*\bB\b/.test(t) ||
+      /A[\.、:：）)]/.test(t)
+    );
+  }
+
+  static _parseMergedOptions(text) {
+    const raw = String(text || '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/\r/g, '\n')
+      .trim();
+
+    if (!raw) return [];
+
+    const normalized = raw
+      .replace(/[Ａ-Ｆ]/g, (m) => String.fromCharCode(m.charCodeAt(0) - 65248))
+      .replace(/([A-F])[．。]/g, '$1.')
+      .replace(/([A-F])[：:]/g, '$1:')
+      .replace(/([A-F])[）)]/g, '$1)')
+      .replace(/\u00A0/g, ' ');
+
+    const pieces = normalized
+      .replace(/([A-F][\.\-:：、\)])/g, '\n$1')
+      .split(/\n+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const options = [];
+    for (const part of pieces) {
+      const m = part.match(/^([A-F])[\.\-:：、\)]\s*(.+)$/i);
+      if (m) {
+        options.push({
+          label: m[1].toUpperCase(),
+          text: m[2].trim(),
+        });
+      }
     }
-    return 'q_' + Math.abs(hash).toString(36);
+
+    if (options.length >= 2) return options;
+
+    const fallback = [];
+    const reg = /([A-F])[\.\-:：、\)]\s*([\s\S]*?)(?=(?:[A-F][\.\-:：、\)])|$)/gi;
+    let match;
+    while ((match = reg.exec(normalized))) {
+      fallback.push({
+        label: match[1].toUpperCase(),
+        text: String(match[2] || '').trim(),
+      });
+    }
+
+    return fallback;
+  }
+
+  static _toNumber(v) {
+    const n = Number(String(v || '').trim());
+    return Number.isFinite(n) ? n : null;
   }
 }
-
-// 暴露为全局变量（content script 环境）
-window.XlsxParser = XlsxParser;

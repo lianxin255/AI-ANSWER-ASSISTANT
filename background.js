@@ -16,7 +16,7 @@ chrome.action.onClicked.addListener((tab) => {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   switch (request.action) {
     case 'callAI':
-      callAI(request.config, request.prompt, 'answer')
+      callAI(request.config, request.prompt, request.mode || 'answer')
         .then(response => sendResponse({ success: true, data: response }))
         .catch(error => sendResponse({ success: false, error: error.message }));
       return true;
@@ -139,7 +139,20 @@ async function callAI(config, prompt, mode = 'answer') {
 3. 为每个可交互元素（选项、输入框）生成精确的CSS选择器
 4. 不要分析答案，答案会在后续步骤单独获取
 
-只返回JSON格式，不要有其他内容。确保JSON格式正确。`
+只返回JSON格式，不要有其他内容。确保JSON格式正确。`,
+
+    mapping: `你是一个专业的题库表格解析助手。你需要根据表头与样本行推断题库字段映射。
+
+请只返回JSON格式的列映射，不要包含任何解释文字。
+{
+  "stem": "题干所在列的表头名",
+  "type": "题型所在列的表头名（如有）",
+  "answer": "答案所在列的表头名",
+  "options": "选项合并列的表头名（如果选项在一列中）",
+  "optionStart": "选项起始列的表头名（如果选项分多列）",
+  "optionEnd": "选项结束列的表头名（如果选项分多列）"
+}
+注意：options和optionStart/optionEnd二选一，没有的字段不要包含。`
   };
 
   const response = await fetch(url, {

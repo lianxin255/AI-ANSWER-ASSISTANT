@@ -56,6 +56,19 @@
         </div>
       </div>
 
+      <!-- 答题策略 -->
+      <div class="strategy-selector" id="strategySelector">
+        <div class="section-header">
+          <span>答题策略</span>
+        </div>
+        <select id="answerStrategy">
+          <option value="local_first">优先题库，未命中用 AI</option>
+          <option value="ai_only">仅 AI</option>
+          <option value="local_only">仅题库（未命中跳过）</option>
+        </select>
+        <div class="strategy-hint">修改后对本次答题生效</div>
+      </div>
+
       <!-- 操作步骤区 -->
       <div class="steps-area">
         <div class="action-row">
